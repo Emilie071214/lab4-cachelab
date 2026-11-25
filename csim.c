@@ -58,8 +58,66 @@ static void usage(const char *prog)
  */
 static void access_cache(uint64_t addr)
 {
-    (void)addr;
-    (void)tick;
+    size_t set;
+    uint64_t tag;
+    line_t *lines;
+    int i, victim, found;
+
+    /* Set index: the s bits just above the b block-offset bits. */
+    if (s == 0)
+        set = 0;
+    else
+        set = (size_t)((addr >> b) & ((((uint64_t)1) << s) - 1));
+
+    /* Tag: everything above the block-offset and set-index bits. When
+       b + s == 64 there are no tag bits left, so the tag is zero. */
+    if (b + s >= 64)
+        tag = 0;
+    else
+        tag = addr >> (b + s);
+
+    lines = &cache[set * (size_t)E];
+
+    found = -1;
+    victim = -1;
+    {
+        int free_line = -1, lru_line = -1;
+        for (i = 0; i < E; i++) {
+            if (lines[i].valid) {
+                if (lines[i].tag == tag)
+                    found = i;
+                if (lru_line < 0 ||
+                    lines[i].last_used < lines[lru_line].last_used)
+                    lru_line = i;    /* least recently used line so far */
+            } else if (free_line < 0) {
+                free_line = i;       /* first invalid line */
+            }
+        }
+        /* An invalid line is used before any valid one is evicted. */
+        victim = (free_line >= 0) ? free_line : lru_line;
+    }
+
+    if (found >= 0) {
+        hits++;
+        lines[found].last_used = ++tick;
+        if (verbose)
+            printf(" hit");
+        return;
+    }
+
+    misses++;
+    if (verbose)
+        printf(" miss");
+
+    /* Replace the chosen victim. Only a valid line counts as an eviction. */
+    if (lines[victim].valid) {
+        evictions++;
+        if (verbose)
+            printf(" eviction");
+    }
+    lines[victim].valid = 1;
+    lines[victim].tag = tag;
+    lines[victim].last_used = ++tick;
 }
 
 /* replay - run every data access in the trace through the cache */

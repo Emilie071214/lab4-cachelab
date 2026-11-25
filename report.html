@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Cache Lab 实验报告</title>
+<style>
+  @page { size: A4; margin: 17mm 15mm 16mm 15mm; }
+  html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  body {
+    font-family: "Microsoft YaHei", "SimSun", "Segoe UI", sans-serif;
+    font-size: 10.3pt; line-height: 1.62; color: #1a1a1a; margin: 0;
+  }
+  h1 { font-size: 21pt; text-align: center; margin: 0 0 2mm; letter-spacing: 1px; }
+  .subtitle { text-align: center; color: #555; font-size: 11pt; margin-bottom: 5mm; }
+  .meta { width: 100%; border-collapse: collapse; margin: 0 0 7mm; font-size: 10pt; }
+  .meta td { border: 1px solid #c9d3dd; padding: 2.2mm 3mm; }
+  .meta td.k { background: #eef3f8; width: 18%; font-weight: 600; }
+  h2 {
+    font-size: 14pt; margin: 7mm 0 2.5mm; padding-bottom: 1.2mm;
+    border-bottom: 2px solid #4a78a8; color: #23476b; page-break-after: avoid;
+  }
+  h3 { font-size: 11.3pt; margin: 4.5mm 0 1.5mm; color: #2c4f72; page-break-after: avoid; }
+  p { margin: 1.2mm 0; text-align: justify; }
+  ul, ol { margin: 1.2mm 0 1.2mm; padding-left: 6.5mm; }
+  li { margin: 0.6mm 0; }
+  code {
+    font-family: "Cascadia Mono", Consolas, "Courier New", monospace;
+    font-size: 9pt; background: #f2f4f6; padding: 0 1.2mm; border-radius: 2px;
+  }
+  pre {
+    font-family: "Cascadia Mono", Consolas, "Courier New", monospace;
+    font-size: 8.4pt; line-height: 1.45; background: #f7f9fb;
+    border: 1px solid #d8e0e8; border-left: 3px solid #4a78a8;
+    padding: 2.2mm 3mm; margin: 2mm 0; white-space: pre-wrap;
+    page-break-inside: auto; orphans: 4; widows: 4;
+  }
+  pre.out { background: #fbfbf8; border-left-color: #8a9a6a; font-size: 8.2pt; }
+  table.data { width: 100%; border-collapse: collapse; margin: 2.5mm 0; font-size: 9.4pt; }
+  table.data th, table.data td { border: 1px solid #c4ced8; padding: 1.6mm 2mm; text-align: center; }
+  table.data th { background: #e8eff6; font-weight: 600; }
+  table.data tr:nth-child(even) td { background: #fafbfd; }
+  .note { background: #fff8e6; border: 1px solid #ecd9a0; padding: 2mm 3mm; margin: 2mm 0; font-size: 9.6pt; }
+  .good { color: #1a6b2a; font-weight: 600; }
+  .pagebreak { page-break-before: always; }
+  .cap { font-size: 9pt; color: #555; text-align: center; margin: -1mm 0 3mm; }
+  .formula { font-family: "Cambria Math", "Times New Roman", serif; font-style: italic; }
+</style>
+</head>
+<body>
+
+<h1>Cache Lab 实验报告</h1>
+<div class="subtitle">CS:APP 第 6 章 · 高速缓存与程序性能</div>
+
+<table class="meta">
+  <tr><td class="k">实验</td><td>Lab4 · Cache Lab</td><td class="k">日期</td><td>2026 年 11 月</td></tr>
+  <tr><td class="k">自动评测</td><td colspan="3"><span class="good">110.000 / 110</span>（Part A 35 + Part B 40 + Part C 25 + Bonus 10）</td></tr>
+</table>
+
+<h2>1　实验环境与总览</h2>
+<p>本实验在 x86_64 Linux 环境下完成，全部代码使用 C 语言编写，通过 <code>make</code> 构建（开启 <code>-Wall -Werror</code>，无任何告警），并用 <code>valgrind</code> 的 lackey 工具生成访存 trace，由 <code>csim-ref</code> 统计 miss 数。</p>
+<table class="data">
+  <tr><th>组件</th><th>版本 / 参数</th></tr>
+  <tr><td>操作系统</td><td>Ubuntu（WSL2，x86_64）</td></tr>
+  <tr><td>编译器</td><td>gcc 15.2.0，<code>-g -Wall -Werror -fsigned-char</code>；trans.c / mul.c 以 <code>-O0</code> 编译</td></tr>
+  <tr><td>动态分析</td><td>valgrind 3.26.0（lackey）</td></tr>
+  <tr><td>评测脚本</td><td>python3 + <code>driver.py</code></td></tr>
+</table>
+
+<p>总评测结果如下（<code>python3 driver.py</code>）：</p>
+<pre class="out">Cache Lab summary:
+                        Points   Max pts      Misses
+Csim correctness        35.000        35
+Trans perf 32x32        12.000        12         288
+Trans perf 64x64        12.000        12        1180
+Trans perf 61x67        16.000        16        1862
+Mul perf 32x32          25.000        25        2656
+Reverse-engineering     10.000        10
+          Total points 110.000       110</pre>
+
+<p>下面按 Part A、Part B、Part C、Bonus 的顺序说明实现思路、正确性论证与实测效果。</p>
+
+<h2>2　Part A：缓存模拟器</h2>
+
+<h3>2.1　数据结构与总体流程</h3>
+<p>框架已经完成命令行解析、缓存分配、trace 读取与结果输出，并约定：跳过 <code>I</code>；对 <code>M</code> 连续调用两次 <code>access_cache</code>；每次访存不跨块，因此可忽略 size。缓存按“组优先”排布：第 <span class="formula">i</span> 组占用从 <code>cache[i*E]</code> 开始的 <span class="formula">E</span> 个连续行。每行记录有效位、tag 和最近使用计数 <code>last_used</code>（越大越新）。</p>
+
+<h3>2.2　<code>access_cache</code> 的实现</h3>
+<p>一次访存分为“地址拆分 → 查找 → 命中更新 / 缺失替换”三步：</p>
+<ol>
+  <li><b>地址拆分。</b>组索引取自块偏移之上的 <span class="formula">s</span> 位：<code>set = (addr &gt;&gt; b) &amp; ((1&lt;&lt;s)-1)</code>；tag 取自更高位：<code>tag = addr &gt;&gt; (b+s)</code>。</li>
+  <li><b>查找。</b>遍历该组 <span class="formula">E</span> 行：若有效且 tag 相同则命中；同时记录第一个无效行（<code>free_line</code>）与 <code>last_used</code> 最小的有效行（<code>lru_line</code>）。</li>
+  <li><b>更新。</b>命中时 <code>hits++</code>，并把该行 <code>last_used</code> 置为 <code>++tick</code>；缺失时 <code>misses++</code>，优先使用无效行，否则换出 LRU 行并 <code>evictions++</code>，随后写入 tag、置有效、刷新时间戳。</li>
+</ol>
+
+<pre>static void access_cache(uint64_t addr)
+{
+    size_t set;
+    uint64_t tag;
+    line_t *lines;
+    int i, victim, found;
+
+    /* 组索引：块偏移之上的 s 位 */
+    if (s == 0)
+        set = 0;
+    else
+        set = (size_t)((addr &gt;&gt; b) &amp; ((((uint64_t)1) &lt;&lt; s) - 1));
+
+    /* tag：再往上的所有位；b+s==64 时已无 tag 位 */
+    if (b + s &gt;= 64)
+        tag = 0;
+    else
+        tag = addr &gt;&gt; (b + s);
+
+    lines = &amp;cache[set * (size_t)E];
+
+    found = -1;
+    victim = -1;
+    {
+        int free_line = -1, lru_line = -1;
+        for (i = 0; i &lt; E; i++) {
+            if (lines[i].valid) {
+                if (lines[i].tag == tag)
+                    found = i;
+                if (lru_line &lt; 0 ||
+                    lines[i].last_used &lt; lines[lru_line].last_used)
+                    lru_line = i;          /* 最久未使用 */
+            } else if (free_line &lt; 0) {
+                free_line = i;             /* 编号最小的无效行 */
+            }
+        }
+        victim = (free_line &gt;= 0) ? free_line : lru_line;
+    }
+
+    if (found &gt;= 0) {                       /* 命中 */
+        hits++;
+        lines[found].last_used = ++tick;
+        if (verbose) printf(" hit");
+        return;
+    }
+
+    misses++;                               /* 缺失 */
+    if (verbose) printf(" miss");
+    if (lines[victim].valid) {              /* 换出有效行才算 eviction */
+        evictions++;
+        if (verbose) printf(" eviction");
+    }
+    lines[victim].valid = 1;
+    lines[victim].tag = tag;
+    lines[victim].last_used = ++tick;
+}</pre>
+
+<h3>2.3　边界与正确性要点</h3>
+<ul>
+  <li><b><code>s == 0</code>：</b>只有一个组，单独分支把组索引固定为 0，避免 <code>1&lt;&lt;0</code> 的掩码语义混淆。</li>
+  <li><b><code>b + s == 64</code>：</b>地址 64 位、块偏移与组索引恰好占满，没有 tag 位；此时令 <code>tag = 0</code>，避免对 64 位整数左/右移 64 位（C 标准中为未定义行为）。</li>
+  <li><b>无效行优先：</b>组内有无效行时不发生替换，<code>evictions</code> 不增加；这直接对应题目“一次替换同时计为一次缺失，但不是所有缺失都是替换”。</li>
+  <li><b>LRU 计数：</b>每次命中或调入都 <code>++tick</code>，组内取最小者换出，天然处理“访问历史为空”的初始状态（所有行的 <code>last_used</code> 初值为 0，但无效行优先，因此不会误选）。</li>
+  <li><b>verbose 输出：</b>只追加 <code>" hit" / " miss" / " miss eviction"</code>，不输出换行；<code>M</code> 的两次调用自然产生 <code>" miss hit"</code>，与参考程序逐字节一致。</li>
+</ul>
+
+<h3>2.4　评测结果</h3>
+<p><code>./test-csim</code> 的 8 个计分测例全部与 <code>csim-ref</code> 完全一致，原始分 <b>27/27</b>，折算 Part A 得分 <b>35</b>。四个非计分的 <code>-v</code> 边界诊断（含 <code>(0,2,0)</code>、<code>(0,1,64)</code>、<code>(1,1,63)</code>）全部 PASS：</p>
+<pre class="out">                        Your simulator     Reference simulator
+Points (s,E,b)    Hits  Misses  Evicts    Hits  Misses  Evicts
+     3 (1,1,1)       9       8       6       9       8       6  traces/yi2.trace
+     3 (4,2,4)       4       5       2       4       5       2  traces/yi.trace
+     3 (2,1,4)       2       3       1       2       3       1  traces/dave.trace
+     3 (2,1,3)     167      71      67     167      71      67  traces/trans.trace
+     3 (2,2,3)     201      37      29     201      37      29  traces/trans.trace
+     3 (2,4,3)     212      26      10     212      26      10  traces/trans.trace
+     3 (5,1,5)     231       7       0     231       7       0  traces/trans.trace
+     6 (5,1,5)  265189   21775   21743  265189   21775   21743  traces/long.trace
+    27
+
+Non-scoring checks (-v output)
+  (4,1,4) traces/yi.trace  PASS
+  (0,2,0) traces/csim-boundary.trace  PASS
+  (0,1,64) traces/csim-boundary.trace  PASS
+  (1,1,63) traces/csim-boundary.trace  PASS</pre>
+
+<h2 class="pagebreak">3　Part B：矩阵转置</h2>
+
+<h3>3.1　目标缓存分析</h3>
+<p>缓存参数为 <span class="formula">s = 5, E = 1, b = 5</span>：共 32 组、直接映射、块大小 32 字节，即每块存 8 个 <code>int</code>，总容量 1 KB。对 <span class="formula">M</span> 列的矩阵，元素 <code>A[i][j]</code> 的字节地址为 <code>base + 4*(i*M + j)</code>，所在行号为 <span class="formula">(i·M + j)/8</span>，组号为该行号模 32。</p>
+<ul>
+  <li><b>32×32：</b>行号 <span class="formula">4i + j/8</span>，每一行恰好 4 个 cache 块；行 <span class="formula">i</span> 与 <span class="formula">i+8</span> 映射到完全相同的组，同列方向存在 4 路冲突。</li>
+  <li><b>64×64：</b>行号 <span class="formula">8i + j/8</span>，每一行 8 个块；行 <span class="formula">i</span> 与 <span class="formula">i+4</span> 同组，A、B 的对角块还会互相冲突。</li>
+  <li><b>61×67：</b>行长 61 个 <code>int</code>（244 字节），不按行对齐，组映射随行号漂移，主要靠分块消除列方向的重复缺失。</li>
+</ul>
+<p>朴素按行转置时，写 <code>B[j][i]</code> 沿列方向跨行，每写一个元素就可能换入一个只用一次的块，因此基线有 1184 次 miss。下面针对三种尺寸分别优化。</p>
+
+<h3>3.2　32×32：8×8 分块</h3>
+<p>把矩阵划成 8×8 子块。对每个子块，一次读入 A 的一整行（8 个 <code>int</code> 恰好一个 cache 块），放进 8 个寄存器，再按列写回 B：</p>
+<pre>for (i = 0; i &lt; 32; i += 8)
+  for (j = 0; j &lt; 32; j += 8)
+    for (k = 0; k &lt; 8; k++) {
+      a0 = A[i+k][j]; ... a7 = A[i+k][j+7];      /* 1 次读块，8 次使用 */
+      B[j][i+k] = a0; ... B[j+7][i+k] = a7;      /* 写 B 的 8 行 */
+    }</pre>
+<p>每个子块对 A 是 8 次读块（8 行）、对 B 是 8 次写块（8 行），共 16 次；16 个子块即 256 次，其余来自子块间的对角冲突，实测 <b>288</b>，优于满分线 300。</p>
+
+<h3>3.3　64×64：8×8 分块 + 4×4 象限重排</h3>
+<p>单纯 8×8 分块在 64×64 上约 4700 次 miss，原因有二：A 的 8 行只落在 4 个组上（行 <span class="formula">i</span> 与 <span class="formula">i+4</span> 冲突），且 A、B 的对角子块落在同一组，读 A 会反复踢掉 B 的暂存数据。为此把每个 8×8 子块再切成 4 个 4×4 象限：</p>
+<ol>
+  <li><b>上四行。</b>对 <span class="formula">k = i … i+3</span>，一次读入 <code>A[k][j..j+7]</code> 的 8 个值。左上象限直接转置写入 <code>B[j..j+3][k]</code>；右上象限暂时寄存在 B 的右上区域 <code>B[j..j+3][k+4]</code>（该区域稍后才需要）。</li>
+  <li><b>左下与暂存交换。</b>对 <span class="formula">k = j … j+3</span>，读 <code>A[i+4..i+7][k]</code>（左下象限），同时从 B 右上取回寄存值；把左下象限写入 B 的右上，把寄存值写入 B 的左下 <code>B[k+4][i..i+3]</code>。这一步是整段代码的关键：它让“A 右上 → B 左下”的搬运与“A 左下 → B 右上”的写入共用同一批 cache 行，避免了对角块的反复换入换出。</li>
+  <li><b>右下象限。</b>对 <span class="formula">k = i+4 … i+7</span> 直接读 <code>A[k][j+4..j+7]</code> 写入 <code>B[j+4..j+7][k]</code>，此时两侧都不再被重复使用。</li>
+</ol>
+
+<pre>for (i = 0; i &lt; 64; i += 8)
+  for (j = 0; j &lt; 64; j += 8) {
+    for (k = i; k &lt; i + 4; k++) {
+      a0 = A[k][j]; ... a7 = A[k][j+7];
+      B[j][k] = a0; ... B[j+3][k] = a3;
+      B[j][k+4] = a4; ... B[j+3][k+4] = a7;     /* 暂存右上象限 */
+    }
+    for (k = j; k &lt; j + 4; k++) {
+      a0 = A[i+4][k]; ... a3 = A[i+7][k];        /* 左下 */
+      a4 = B[k][i+4]; ... a7 = B[k][i+7];        /* 取回暂存 */
+      B[k][i+4] = a0; ... B[k][i+7] = a3;        /* 左下 → 右上 */
+      B[k+4][i] = a4; ... B[k+4][i+3] = a7;      /* 暂存 → 左下 */
+    }
+    for (k = i + 4; k &lt; i + 8; k++) {
+      a0 = A[k][j+4]; ... a3 = A[k][j+7];
+      B[j+4][k] = a0; ... B[j+7][k] = a3;        /* 右下 */
+    }
+  }</pre>
+<p>局部变量为 8 个数据寄存器 <code>a0…a7</code> 加 3 个循环变量，满足“至多 12 个 int”的限制；A 全程只读。实测 <b>1180</b> 次 miss，优于满分线 1300。</p>
+
+<h3>3.4　61×67：64 行 × 16 列分块</h3>
+<p>该尺寸两个方向都不是 8 的倍数，且行长为 61，组映射没有整齐的周期。我先用边缘保护（<code>k &lt; N</code>、<code>l &lt; M</code>）保证正确性，再对分块参数做小规模扫描（8/12/16/20/24/32/40/56/64 行 × 8/12/16/20/24/32/48/61 列）。</p>
+<table class="data">
+  <tr><th>分块 (行×列)</th><th>8×8</th><th>16×16</th><th>40×16</th><th>56×16</th><th>64×16</th><th>64×20</th><th>64×32</th></tr>
+  <tr><td>miss</td><td>2119</td><td>1993</td><td>1865</td><td>1864</td><td><b>1862</b></td><td>1908</td><td>2556</td></tr>
+</table>
+<p>最终取 64 行 × 16 列：16 列恰好是 A 的两条 cache 行，B 的写入集中在 16 行的窄列块；一次沿 64 行的高条带读 A，可以把 B 的列块在缓存中保留更久，从而摊薄列方向的重复缺失。实测 <b>1862</b> 次 miss，优于满分线 2000。</p>
+
+<h3>3.5　结果汇总</h3>
+<table class="data">
+  <tr><th>尺寸</th><th>满分线</th><th>实测 miss</th><th>得分</th></tr>
+  <tr><td>32 × 32</td><td>≤ 300</td><td>288</td><td>12 / 12</td></tr>
+  <tr><td>64 × 64</td><td>≤ 1300</td><td>1180</td><td>12 / 12</td></tr>
+  <tr><td>61 × 67</td><td>≤ 2000</td><td>1862</td><td>16 / 16</td></tr>
+</table>
+<pre class="out">$ ./test-trans -M 32 -N 32
+Summary for official submission (func 0): correctness=1 misses=288
+TEST_TRANS_RESULTS=1:288
+$ ./test-trans -M 64 -N 64
+Summary for official submission (func 0): correctness=1 misses=1180
+TEST_TRANS_RESULTS=1:1180
+$ ./test-trans -M 61 -N 67
+Summary for official submission (func 0): correctness=1 misses=1862
+TEST_TRANS_RESULTS=1:1862</pre>
+
+<h2 class="pagebreak">4　Part C：矩阵乘法</h2>
+
+<h3>4.1　问题分析</h3>
+<p>计算 <span class="formula">C = A × B</span>，其中 <span class="formula">A</span> 为 <span class="formula">N×M</span>、<span class="formula">B</span> 为 <span class="formula">M×N</span>、<span class="formula">C</span> 为 <span class="formula">N×N</span>，评测尺寸为 32×32。三个 32×32 矩阵各 128 条 cache 行，而缓存只有 32 行，任何两个矩阵都无法同时整体驻留。朴素 i-j-k 写法沿列读 B，每个元素都要跨过整行，实测 <b>35908</b> 次 miss。</p>
+<p>把循环改为分块后，关键是让每个被搬入缓存的行在换出前参与尽量多的乘加：一条 A 的行块（8 个 <code>int</code>）可与 8 个不同的 <code>j</code> 相乘，一条 B 的行块同样可服务 8 个 <code>i</code>。因此采用 8×8×8 三重分块。</p>
+
+<h3>4.2　实现：8×8×8 分块 + 8 个累加器</h3>
+<p>外层按 8×8 划分 C 的子块，内层再按 8 划分 <span class="formula">k</span>。对 C 子块中的每一行 <code>ii</code>，用 8 个寄存器 <code>a0…a7</code> 累加这一行的 8 个元素：</p>
+<ul>
+  <li>当 <code>k0 == 0</code> 时把累加器清零；否则从 C 读回上一次 <span class="formula">k</span> 分块的中间结果（C 的初始内容是垃圾值，不能直接使用）。</li>
+  <li>对 <span class="formula">kk = k0 … k0+7</span>：读一次 <code>A[ii][kk]</code>，再读 B 的一整行块 <code>B[kk][j0..j0+7]</code>，一条 A 元素服务 8 个乘加，一条 B 行块也服务 8 个乘加。</li>
+  <li>一个 <span class="formula">k</span> 分块结束后，把 8 个累加器写回 <code>C[ii][j0..j0+7]</code>（一条 cache 行）。</li>
+</ul>
+
+<pre>for (i0 = 0; i0 &lt; N; i0 += 8)
+  for (j0 = 0; j0 &lt; N; j0 += 8)
+    for (k0 = 0; k0 &lt; M; k0 += 8)
+      for (ii = i0; ii &lt; i0 + 8 &amp;&amp; ii &lt; N; ii++) {
+        if (k0 == 0) a0 = a1 = ... = a7 = 0;
+        else { a0 = C[ii][j0]; ... a7 = C[ii][j0+7]; }   /* 读回部分和 */
+        for (kk = k0; kk &lt; k0 + 8 &amp;&amp; kk &lt; M; kk++) {
+          t = A[ii][kk];
+          a0 += t*B[kk][j0]; ... a7 += t*B[kk][j0+7];
+        }
+        C[ii][j0] = a0; ... C[ii][j0+7] = a7;            /* 写回 */
+      }</pre>
+
+<p><b>为什么这样能减少冲突。</b>在固定的 <code>k0</code> 下，B 的 8 条行块 <code>B[kk][j0..j0+7]</code> 落在 8 个互不相同的组（组号相差 4），恰好能被 32 组缓存容纳；处理 8 个 <code>ii</code> 时它们一直驻留，每条 B 行块被复用 8 次。A 的当前行块也在同一条 <code>kk</code> 循环中被复用 8 次。C 的每一行块在 4 个 <span class="formula">k</span> 分块中各读写一次，但相邻访问命中同一条缓存行。</p>
+<p>局部变量为 8 个累加器 + 1 个临时 <code>t</code> + 5 个循环变量，满足“至多 16 个 int”的限制；A、B 只读，C 的每个元素都被写入（<code>k0 == 0</code> 时清零后累加，最后一个 <span class="formula">k</span> 分块写回最终值）。</p>
+
+<h3>4.3　结果</h3>
+<pre class="out">$ ./test-mul -M 32 -N 32
+func 0 (Multiply submission): hits:41381, misses:2656, evictions:2624
+func 1 (Simple i-j-k multiply): hits:30657, misses:35908, evictions:35876
+Summary for official submission (func 0): correctness=1 misses=2656
+TEST_MUL_RESULTS=1:2656</pre>
+<p>实测 <b>2656</b> 次 miss，远低于满分线 3999，Part C 得 <b>25/25</b>；相对朴素实现减少约 92.6%。</p>
+
+<h2 class="pagebreak">5　Bonus：缓存逆向</h2>
+
+<p>未知缓存的地址为 32 位，参数范围：<span class="formula">b ∈ [3,7]</span>、<span class="formula">s ∈ [1,9]</span>、<span class="formula">E ∈ {1,2,3,4,5,6,8,12,16}</span>，替换策略为 LRU / FIFO / RANDOM 之一，写缺失可能写分配或不写分配。只能通过 <code>cache_load</code>、<code>cache_store</code>、<code>cache_flush</code> 探测。下面给出每一步的探测方法、正确性证明与代价。</p>
+
+<h3>5.1　块偏移位数 <span class="formula">b</span></h3>
+<p>清空缓存后读地址 0，把块 0 调入；随后依次读 <span class="formula">1, 2, 4, …, 2^t</span>。只要 <span class="formula">2^t &lt; 2^b</span>，该地址仍落在块 0 内，必然命中；第一次越过块边界（<span class="formula">2^t = 2^b</span>）时发生强制缺失，于是 <b>第一个缺失的 2 的幂次偏移量就是 <span class="formula">b</span></b>。由于 <span class="formula">b ∈ [3,7]</span>，最多探测 8 次。</p>
+
+<h3>5.2　容量乘积 <span class="formula">P = E·2<sup>s</sup></span></h3>
+<p>设一组“探测族”为块编号 <span class="formula">i·2^t</span>（<span class="formula">i = 0,1,…,N-1</span>，地址再左移 <span class="formula">b</span> 位）。先把前 <span class="formula">N</span> 个块全部读入，再按原顺序重读一遍，若重读出现任何缺失就称该 <span class="formula">N</span> 为“坏”的。</p>
+<p>块 <span class="formula">i·2^t</span> 的组号为 <span class="formula">(i·2^t) mod 2^s</span>。该族只落在 <span class="formula">2^s / gcd(2^t, 2^s)</span> 个组上，每组平均分到 <span class="formula">N·gcd(2^t,2^s)/2^s</span> 个块。只有当某组超过 <span class="formula">E</span> 个块时才会换出，故第一次出现缺失的 <span class="formula">N</span> 为</p>
+<p style="text-align:center"><span class="formula">N<sub>min</sub>(t) = E · 2<sup>s − min(t,s)</sup> + 1.</span></p>
+<p>取 <span class="formula">t = 0</span>（连续块），得 <span class="formula">N<sub>min</sub>(0) = E·2^s + 1 = P + 1</span>，因此用二分查找出最小的“坏” <span class="formula">N</span> 后，<span class="formula">P = N − 1</span>。该判据与替换策略无关：只要某组超过容量，必有块被换出，重读时必然缺失；未超过容量时全部驻留，重读全部命中。</p>
+
+<h3>5.3　组索引位数 <span class="formula">s</span> 与相联度 <span class="formula">E</span></h3>
+<p>对候选 <span class="formula">t</span>，取 <span class="formula">N = ⌊P/2^t⌋ + 1</span> 做一次上述探测：</p>
+<ul>
+  <li>若 <span class="formula">t ≤ s</span>，则 <span class="formula">P/2^t = E·2^(s−t)</span> 为整数，<span class="formula">N = N<sub>min</sub>(t)</span>，恰好触发换出，探测结果为“坏”；</li>
+  <li>若 <span class="formula">t &gt; s</span>，则 <span class="formula">N = ⌊E/2^(t−s)⌋ + 1 ≤ E</span>（因 <span class="formula">t−s ≥ 1</span> 且 <span class="formula">E ≥ 1</span>），而 <span class="formula">N<sub>min</sub>(t) = E+1</span>，所以 <span class="formula">N ≤ E &lt; N<sub>min</sub>(t)</span>，探测结果为“好”。</li>
+</ul>
+<p>于是命题“<span class="formula">t ≤ s</span>”关于 <span class="formula">t</span> 单调（前真后假）。在 <span class="formula">t ∈ [1,10]</span> 上二分，最大的真值 <span class="formula">t</span> 就是 <span class="formula">s</span>；再由 <span class="formula">E = P / 2^s</span> 得到相联度，并一定落在合法集合中。上述推导对任意 <span class="formula">b,s,E</span> 与任意替换策略成立，因为它只依赖“组容量为 <span class="formula">E</span>”这一事实。</p>
+
+<h3>5.4　替换策略</h3>
+<p>取同一组内的 <span class="formula">E</span> 个块 <span class="formula">0, 2^s, 2·2^s, …, (E−1)·2^s</span>（地址再左移 <span class="formula">b</span> 位），依次读入填满该组；再读一次块 0（命中）；最后调入一个新块（块 <span class="formula">E·2^s</span>，仍在同一组），观察块 0 是否还在：</p>
+<ul>
+  <li><b>LRU：</b>对块 0 的命中把它变成“最近使用”，因此新块会换出块 1，块 0 保留；</li>
+  <li><b>FIFO：</b>命中不改变调入顺序，块 0 仍是最早调入者，被新块换出；</li>
+  <li><b>RANDOM：</b>在 <span class="formula">E</span> 行中均匀随机换出，块 0 以 <span class="formula">1/E</span> 的概率被换出，不同试验结果不同。</li>
+</ul>
+<p>重复 300 次独立试验（每次先 <code>cache_flush</code>）：LRU 恒为 300 次命中，FIFO 恒为 0 次命中；RANDOM 出现两种结果之一是极小概率事件，其上界为 <span class="formula">max((1/E)^300, (1−1/E)^300) ≤ (15/16)^300 ≈ 4×10<sup>−9</sup></span>（<span class="formula">E ≤ 16</span>）。因此“全命中 → LRU、零命中 → FIFO、混合 → RANDOM”的判定在允许范围内几乎必然正确。<span class="formula">E = 1</span> 时策略不计分，直接报告 LRU。</p>
+
+<div class="note">
+<b>E = 4 时 LRU 与 FIFO 的分歧示例。</b>设某组的四个块按地址升序记为 A、B、C、D，新块记为 E，访问序列：
+<code>A, B, C, D, A, E, A</code>。
+前四次 <code>A,B,C,D</code> 填满该组；第五次访问 <code>A</code> 命中。
+此时 LRU 的次序变为 <code>B, C, D, A</code>，FIFO 的调入次序仍为 <code>A, B, C, D</code>（命中不影响顺序）。
+第六次访问 <code>E</code> 时，<b>两者开始分歧</b>：LRU 换出 <code>B</code>，FIFO 换出 <code>A</code>。
+第七次再访问 <code>A</code>：LRU 命中（A 仍在），FIFO 缺失（A 已被换出）。
+对应到实际地址，取 <code>A = 0</code>、<code>B = 2<sup>s+b</sup></code>、<code>C = 2·2<sup>s+b</sup></code>、<code>D = 3·2<sup>s+b</sup></code>、<code>E = 4·2<sup>s+b</sup></code>，它们都落在 0 号组。
+</div>
+
+<h3>5.5　写分配</h3>
+<p>清空缓存后，先对某块执行一次 <code>cache_store</code>（必然写缺失），再 <code>cache_load</code> 同一块：若写缺失分配了该块，则读命中（<b>write_allocate = 1</b>）；否则缓存不变，读缺失（<b>write_allocate = 0</b>）。只需两次探测，且与替换策略和几何参数无关。</p>
+
+<h3>5.6　结果与健壮性</h3>
+<p>以本人学号运行 <code>./test-solver -i &lt;学号&gt;</code>，8 个练习缓存全部正确：几何参数 8/8、写分配 8/8、替换策略 6/6，Bonus 得 <b>10/10</b>。单次探测次数远低于 10<sup>6</sup> 上限，耗时约 1 秒，远低于 30 秒限制。</p>
+<pre class="out">slot cache                            answer                             probes  result
+0    b=7 s=2 E=3  LRU    wa=1         b=7 s=2 E=3  LRU    wa=1            10094  ok
+1    b=4 s=8 E=5  LRU    wa=0         b=4 s=8 E=5  LRU    wa=0            33447  ok
+2    b=7 s=4 E=5  FIFO   wa=0         b=7 s=4 E=5  FIFO   wa=0            11444  ok
+3    b=5 s=8 E=12 FIFO   wa=1         b=5 s=8 E=12 FIFO   wa=1            75271  ok
+4    b=3 s=5 E=2  RANDOM wa=0         b=3 s=5 E=2  RANDOM wa=0            10332  ok
+5    b=4 s=6 E=12 RANDOM wa=1         b=4 s=6 E=12 RANDOM wa=1            25379  ok
+6    b=7 s=6 E=1  -      wa=1         b=7 s=6 E=1  -      wa=1             8814  ok
+7    b=7 s=3 E=1  -      wa=0         b=7 s=3 E=1  -      wa=0             8262  ok
+
+Geometry (b, s, E) right: 8/8
+Write-allocate right (with geometry): 8/8
+Policy right (with geometry, E > 1): 6/6</pre>
+<p>为了覆盖边界与各种组合，我另外用 <code>./test-solver -c b,s,E,POLICY,wa</code> 构造了 192 个缓存（包含 <span class="formula">b=3/7</span>、<span class="formula">s=1/9</span>、<span class="formula">E=1/2/16</span> 的边界以及随机组合），探测结果全部正确（192/192）。这验证了算法在全部允许取值上的一致性。</p>
+
+<h3>5.7　探测代价</h3>
+<p>最大的一次探测族长度是 <span class="formula">P+1 ≤ 16·2^9+1 = 8193</span>。二分查找 <span class="formula">P</span> 约十几次探测族，每次至多 <span class="formula">2N</span> 次访存；求 <span class="formula">s</span> 至多 4 次同类探测；策略判定为 <span class="formula">300×(E+3) ≤ 5700</span> 次。总探测次数约 10<sup>4</sup>～10<sup>5</sup> 量级，实测最大 75271 次，留有约 13 倍余量。</p>
+
+<h2 class="pagebreak">6　总结</h2>
+<p>本实验从三个角度实践了 CS:APP 第 6 章的核心思想：</p>
+<ol>
+  <li><b>Part A</b> 用精确的地址拆分与 LRU 状态维护，复现了参考模拟器的全部计数与 verbose 输出，并正确处理了 <code>s=0</code>、<code>b+s=64</code> 等边界。</li>
+  <li><b>Part B</b> 通过计算每个矩阵元素落入的组，针对 32×32、64×64、61×67 分别设计了 8×8 分块、4×4 象限重排与 64×16 长条分块，miss 数分别为 288、1180、1862，均达到满分线。</li>
+  <li><b>Part C</b> 用 8×8×8 三重分块和 8 个寄存器累加器，让每条 A/B 缓存行在被换出前参与 8 次乘加，把 35908 次 miss 降到 2656。</li>
+  <li><b>Bonus</b> 把缓存逆向转化为几个可证明的容量判据：用“首次换出的探测族长度”求出 <span class="formula">E·2^s</span>，再用步长 <span class="formula">2^t</span> 的阈值把乘积拆成 <span class="formula">s</span> 与 <span class="formula">E</span>；用命中是否改变淘汰次序区分 LRU/FIFO，用重复试验识别 RANDOM；用“写缺失后重读”判定写分配。</li>
+</ol>
+
+<p>所有源码均满足题目约束：无编译告警；Part B 每个函数至多 12 个 int 局部变量、Part C 至多 16 个；未使用全局变量、<code>malloc</code>、递归或辅助函数；转置不修改 A，乘法不修改 A、B 且写满 C 的每个元素。</p>
+
+<h3>复现方式</h3>
+<pre>make clean &amp;&amp; make
+./test-csim
+./test-trans -M 32 -N 32
+./test-trans -M 64 -N 64
+./test-trans -M 61 -N 67
+./test-mul   -M 32 -N 32
+./test-solver -i &lt;你的学号&gt;
+python3 driver.py -i &lt;你的学号&gt;</pre>
+
+</body>
+</html>

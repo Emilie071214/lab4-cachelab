@@ -22,6 +22,48 @@ int is_mul(int M, int N, int A[N][M], int B[M][N], int C[N][N]);
 char mul_submit_desc[] = "Multiply submission";
 void mul_submit(int M, int N, int A[N][M], int B[M][N], int C[N][N])
 {
+    int i0, j0, k0, ii, kk;
+    int a0, a1, a2, a3, a4, a5, a6, a7, t;
+
+    for (i0 = 0; i0 < N; i0 += 8) {
+        for (j0 = 0; j0 < N; j0 += 8) {
+            for (k0 = 0; k0 < M; k0 += 8) {
+                for (ii = i0; ii < i0 + 8 && ii < N; ii++) {
+                    if (k0 == 0) {
+                        a0 = a1 = a2 = a3 = a4 = a5 = a6 = a7 = 0;
+                    } else {
+                        a0 = C[ii][j0];
+                        a1 = C[ii][j0 + 1];
+                        a2 = C[ii][j0 + 2];
+                        a3 = C[ii][j0 + 3];
+                        a4 = C[ii][j0 + 4];
+                        a5 = C[ii][j0 + 5];
+                        a6 = C[ii][j0 + 6];
+                        a7 = C[ii][j0 + 7];
+                    }
+                    for (kk = k0; kk < k0 + 8 && kk < M; kk++) {
+                        t = A[ii][kk];
+                        a0 += t * B[kk][j0];
+                        a1 += t * B[kk][j0 + 1];
+                        a2 += t * B[kk][j0 + 2];
+                        a3 += t * B[kk][j0 + 3];
+                        a4 += t * B[kk][j0 + 4];
+                        a5 += t * B[kk][j0 + 5];
+                        a6 += t * B[kk][j0 + 6];
+                        a7 += t * B[kk][j0 + 7];
+                    }
+                    C[ii][j0] = a0;
+                    C[ii][j0 + 1] = a1;
+                    C[ii][j0 + 2] = a2;
+                    C[ii][j0 + 3] = a3;
+                    C[ii][j0 + 4] = a4;
+                    C[ii][j0 + 5] = a5;
+                    C[ii][j0 + 6] = a6;
+                    C[ii][j0 + 7] = a7;
+                }
+            }
+        }
+    }
 }
 
 /*

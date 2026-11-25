@@ -22,6 +22,102 @@ int is_transpose(int M, int N, int A[N][M], int B[M][N]);
 char transpose_submit_desc[] = "Transpose submission";
 void transpose_submit(int M, int N, int A[N][M], int B[M][N])
 {
+    int i, j, k, l;
+    int a0, a1, a2, a3, a4, a5, a6, a7;
+
+    if (M == 32 && N == 32) {
+        /* 8x8 blocks: each row segment of A is exactly one cache line,
+           and the eight values are written straight to B's columns. */
+        for (i = 0; i < 32; i += 8) {
+            for (j = 0; j < 32; j += 8) {
+                for (k = 0; k < 8; k++) {
+                    a0 = A[i + k][j];
+                    a1 = A[i + k][j + 1];
+                    a2 = A[i + k][j + 2];
+                    a3 = A[i + k][j + 3];
+                    a4 = A[i + k][j + 4];
+                    a5 = A[i + k][j + 5];
+                    a6 = A[i + k][j + 6];
+                    a7 = A[i + k][j + 7];
+                    B[j][i + k] = a0;
+                    B[j + 1][i + k] = a1;
+                    B[j + 2][i + k] = a2;
+                    B[j + 3][i + k] = a3;
+                    B[j + 4][i + k] = a4;
+                    B[j + 5][i + k] = a5;
+                    B[j + 6][i + k] = a6;
+                    B[j + 7][i + k] = a7;
+                }
+            }
+        }
+    } else if (M == 64 && N == 64) {
+        /* 8x8 blocks split into 4x4 quadrants. Reading a whole row of
+           A and keeping it in registers avoids the A/B conflicts that
+           hit the diagonal blocks, and the top-right quadrant is parked
+           in the yet-unused top-right of B until it can be moved. */
+        for (i = 0; i < 64; i += 8) {
+            for (j = 0; j < 64; j += 8) {
+                for (k = i; k < i + 4; k++) {
+                    a0 = A[k][j];
+                    a1 = A[k][j + 1];
+                    a2 = A[k][j + 2];
+                    a3 = A[k][j + 3];
+                    a4 = A[k][j + 4];
+                    a5 = A[k][j + 5];
+                    a6 = A[k][j + 6];
+                    a7 = A[k][j + 7];
+                    B[j][k] = a0;
+                    B[j + 1][k] = a1;
+                    B[j + 2][k] = a2;
+                    B[j + 3][k] = a3;
+                    B[j][k + 4] = a4;
+                    B[j + 1][k + 4] = a5;
+                    B[j + 2][k + 4] = a6;
+                    B[j + 3][k + 4] = a7;
+                }
+                for (k = j; k < j + 4; k++) {
+                    a0 = A[i + 4][k];
+                    a1 = A[i + 5][k];
+                    a2 = A[i + 6][k];
+                    a3 = A[i + 7][k];
+                    a4 = B[k][i + 4];
+                    a5 = B[k][i + 5];
+                    a6 = B[k][i + 6];
+                    a7 = B[k][i + 7];
+                    B[k][i + 4] = a0;
+                    B[k][i + 5] = a1;
+                    B[k][i + 6] = a2;
+                    B[k][i + 7] = a3;
+                    B[k + 4][i] = a4;
+                    B[k + 4][i + 1] = a5;
+                    B[k + 4][i + 2] = a6;
+                    B[k + 4][i + 3] = a7;
+                }
+                for (k = i + 4; k < i + 8; k++) {
+                    a0 = A[k][j + 4];
+                    a1 = A[k][j + 5];
+                    a2 = A[k][j + 6];
+                    a3 = A[k][j + 7];
+                    B[j + 4][k] = a0;
+                    B[j + 5][k] = a1;
+                    B[j + 6][k] = a2;
+                    B[j + 7][k] = a3;
+                }
+            }
+        }
+    } else {
+        /* General case (61x67): 64-row x 16-column blocks, which keep a
+           whole column block of B resident while a tall strip of A is
+           streamed through, with explicit edge guards. */
+        for (i = 0; i < N; i += 64) {
+            for (j = 0; j < M; j += 16) {
+                for (k = i; k < i + 64 && k < N; k++) {
+                    for (l = j; l < j + 16 && l < M; l++)
+                        B[l][k] = A[k][l];
+                }
+            }
+        }
+    }
 }
 
 /*
